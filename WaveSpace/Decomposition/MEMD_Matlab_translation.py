@@ -23,9 +23,7 @@ from math import pi,sqrt,sin,cos
 import warnings
 import sys
 import numba
-import chaospy
-
-
+from scipy.stats.qmc import Halton
 
 def zero_crossings(signal):
     '''find indices where the signal x crosses zero (criterion for IMF is numbre of zero crossing = number of extrema +-1)'''
@@ -147,11 +145,13 @@ def make_dir_vectors(seq, it, N_dim, dir_vec):
     # Find angles corresponding to the normalized sequence
     tht = np.arctan2(np.sqrt(np.flipud(np.cumsum(b[:0:-1]**2))), b[:N_dim-1]).transpose()
 
-    # Find coordinates of unit direction vectors on n-sphere
+    # Find coordinates of unit direction vectors on n-sphere.
+    # Use running product to avoid repeated np.prod calls in a hot loop.
     dir_vec[0] = 1.0
+    cos_prod = 1.0
     for i in range(1, N_dim):
-        dir_vec[i] = np.sin(tht[i-1]) * np.prod(np.cos(tht[:i-1]))
-    dir_vec[N_dim-1] = np.prod(np.cos(tht))
+        dir_vec[i] = np.sin(tht[i-1]) * cos_prod
+        cos_prod *= np.cos(tht[i-1])
 
     return dir_vec
 
@@ -191,8 +191,9 @@ def envelope_mean(signal, time, seq, numDirs, numSamples, numDims): #new
             fMax = CubicSpline(tMax, zMax, bc_type="not-a-knot")
             envelopeMax = fMax(time)
 
-            amplitude += np.sqrt(np.sum(np.power(envelopeMax - envelopeMin, 2), axis=1)) / 2
-            envelopeMean += (envelopeMax + envelopeMin) / 2
+            diff_env = envelopeMax - envelopeMin
+            amplitude += 0.5 * np.sqrt(np.einsum('ij,ij->i', diff_env, diff_env))
+            envelopeMean += 0.5 * (envelopeMax + envelopeMin)
         else:  # If not enough extrema
             insufficientExtremaCount += 1
 
@@ -214,7 +215,7 @@ def stop(mode, time, sd, sd2, tol, seq, nDirs, nSamples, nDims):
         envelopeMean, nExtrema, numZeroCrossings, amplitude = envelope_mean(
             mode, time, seq, nDirs, nSamples, nDims
         )
-        sx = np.sqrt(np.sum(np.power(envelopeMean, 2), axis=1))
+        sx = np.sqrt(np.einsum('ij,ij->i', envelopeMean, envelopeMean))
 
         if np.all(amplitude):  # Avoid division by zero
             sx /= amplitude
@@ -317,7 +318,7 @@ def memd(x, ndir, maxnIMF=None, stp_crit ='stop', sd=0.075, sd2=0.75, tol=0.075,
     N = np.shape(x)[0]
     t = np.arange(1,np.shape(x)[0]+1)
 
-    seq = chaospy.create_halton_samples(ndir, N_dim).T 
+    seq = Halton(d=N_dim).random(n=ndir)
     r=x.copy()
     n_imf=1
     q = []
@@ -357,7 +358,7 @@ def memd(x, ndir, maxnIMF=None, stp_crit ='stop', sd=0.075, sd2=0.75, tol=0.075,
             if nbit == (MaxIterations-1) and  nbit > 100:
                 warnings.wanr('emd:warning','forced stop of sifting : too many erations')
             
-        q.append(m.transpose())
+        q.append(m.T)
         
         n_imf = n_imf+1
         if maxnIMF != None:
@@ -367,7 +368,7 @@ def memd(x, ndir, maxnIMF=None, stp_crit ='stop', sd=0.075, sd2=0.75, tol=0.075,
         nbit = 0
         
     # Stores the residue
-    q.append(r.transpose())
+    q.append(r.T)
     q = np.asarray(q)
 
     return(q) 
